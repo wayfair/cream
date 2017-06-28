@@ -1,28 +1,28 @@
 # cream
 
-##### Cache Rules Everything Around Me
+**Cache Rules Everything Around Me**
 
-The cache is a very important piece of software that is necessary for a fast 
-and reliable customer experience. Here at Wayfair we use Redis as our  primary 
-caching solution and with that we found the need to monitor what is going on 
-with it. Redis itself provides a lot of useful info to give us  an idea of 
-what is going on but sometimes we need to know more. Keyspace is an area that 
-Redis doesn't provide a simple fast way to look at in a  production environment
-so utilizing the BGSAVE and created RDB files it allows us to look inside what 
-is stored in these nodes. Parsing that data  and extracting useful information 
-from it was needed fast and often for reliable monitoring of our Redis clusters. 
+The cache is a very important system that is necessary for a fast and reliable
+customer experience. Here at Wayfair, we use Redis as a primary caching
+solution, so we quickly found the need to monitor its internal state. Redis
+itself provides a lot of useful info to give us an idea of what is going on but
+sometimes we need to know more. Keyspace is an area that Redis doesn't provide a
+simple, fast way to look at in a production environment, so we can utilize the
+BGSAVE function and analyze the resulting RDB files to allows us to see what is
+stored in these nodes. Parsing that data and extracting useful information from
+it needs to be done often to provide reliable monitoring of our Redis clusters.
 
 ## Build
 
-You will need `gcc` installed. Other than that it is a simple Makefile to be 
+You will need `gcc` installed. Other than that it is a simple Makefile to be
 invoked which will generate two executables.
 
 ```
 make
 ```
 
-If you want to compile with debug options (this will create very verbose output!!)
-simply run this instead:
+If you want to compile with debug options (this will create very verbose
+output!!) simply run this instead:
 
 ```
 make debug
@@ -30,19 +30,20 @@ make debug
 
 ## Dumpread
 
-Parses a Redis RDB file from a BGSAVE and outputs in a human readable format. 
-It is heavily inspiried by https://github.com/sripathikrishnan/redis-rdb-tools 
-but that python implementation was too slow for our production needs. At 
-Wayfair we have large Redis  clusters with many millions, sometimes billions, 
-of keys per node. Writing this in C was a significant performance improvement 
-going from many hours to  only minutes. Aside from a speed perspective, 
-memory consumption was greatly reduced as well.
-Quick run-down of how it works: It reads the file byte by byte and according to
-Redis spec each key type is started (and sometimes terminated) with a specific
-byte value. This switch loop in `main` handles that and uses the function 
-pointer associated with the key type. I use the same LZF compression library 
-that Redis uses to make my life a lot easier and to guarantee correct 
-decompression. Key data is stored in 2 of the same defined structs:
+Parses a Redis RDB file from a BGSAVE and outputs in a human-readable format.
+It is heavily inspiried by https://github.com/sripathikrishnan/redis-rdb-tools,
+but that Python implementation was too slow for our production needs. At
+Wayfair, we have large Redis clusters with many millions, sometimes billions, of
+keys per node. Writing this in C provided a significant performance improvement,
+speeding up a single run from many hours to only minutes. Aside from a speed
+perspective, memory consumption was greatly reduced as well.
+
+Quick run-down of how it works: It reads the file byte-by-byte and, according to
+Redis spec, each key type is started (and sometimes terminated) with a specific
+byte value. This switch loop in `main` handles that and uses the function
+pointer associated with the key type. I use the same LZF compression library
+that Redis uses to make my life a lot easier and to guarantee correct
+decompression. Key data is stored in two identical structs:
 
 ```c
 struct KI {
@@ -51,10 +52,10 @@ struct KI {
 };
 ```
 
-where size is the size of the name or value being store along with str being 
-the data. The expiration is calculated by using the `ctime` key that is included
-in Redis RDB file and subtracting the expiration integer data to see the exact
-TTL from when the BGSAVE was done. 
+Where "size" is the size of the name or value being stored and "str" is the
+data. The expiration is calculated by using the `ctime` key that is included in
+Redis RDB file and subtracting the expiration integer data to see the exact TTL
+from when the BGSAVE was done.
 
 **NOTE**: This is verified to work with Redis 3.2 as that is what we use at 
 Wayfair. I've had success using it with 2.8 but it isn't guaranteed and will 
@@ -63,7 +64,7 @@ add additional Redis version support as the newest stable version is just around
 the corner. Also size is just a quick and dirty estimation (assuming 64 bit app 
 on a 64 bit machine) but is close enough for our metrics.
 
-#### Sample Output
+### Sample Output
 
 ```
 % ./dumpread dump.rdb dump.out
@@ -115,6 +116,7 @@ ziplists will have each field/value separated with either a comma or =>. Size is
 in bytes and Expiration is seconds left from the time the BGSAVE was run.
 
 ## Prefix
+
 This is a utility to quickly sort key prefixes and get some cumulative data. 
 Here at Wayfair we prepend our keys with a prefix that is designated by team, 
 service, or other. It allows us to quickly determine a key's purpose (especially
@@ -124,16 +126,18 @@ their information across all Redis clusters quickly and graph it to monitor. It
 has two types of output: normal and shorthand. The normal is best if you are 
 reading it yourself and want a pretty table to view everything. Shorthand is 
 used if you want to then store that data somewhere (i.e. Redis) to then graph 
-it. Prefix takes advantage of a Trie  to quickly store and access all prefixes 
-along with keeping total memory usage down. All characters are passed through 
-`toupper()` to have a smaller memory footprint so it is assumed that the user 
+it.
+
+Prefix takes advantage of a Trie to quickly store and access all prefixes along
+with keeping total memory usage down. All characters are passed through
+`toupper()` to have a smaller memory footprint so it is assumed that the user
 will not have keys that are prefixed with the same name but different case since
-it would all be lumped into a single prefix. This application is especially 
-fast, typically taking only a few seconds to rip through a few million key out 
-file. Prefix will default send the resulting table to stdout so if you want to 
+it would all be lumped into a single prefix. This application is especially
+fast, typically taking only a few seconds to rip through a few million key out
+file. Prefix will default send the resulting table to stdout so if you want to
 save this information then you should redirect it to a file.
 
-#### Sample Output
+### Sample Output
 
 ```
 % ./prefix keys.out
@@ -146,7 +150,7 @@ save this information then you should redirect it to a file.
 |--------------------------------|------------|------------------|--------------------|-----------------------|-----------------------|
 ```
 
-This is a clip of the output expected from the prefix app. The separators to 
-determine a prefix are special characters such as [:,_]. Prefix will also 
-convert all characters to uppercase to use up less space in the trie so the 
+This is a clip of the output expected from the prefix app. The separators to
+determine a prefix are special characters such as `[:,_]`. Prefix will also
+convert all characters to uppercase to use up less space in the trie so the
 output will reflect that conversion.
