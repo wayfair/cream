@@ -19,13 +19,6 @@
             between redis-cli info keyspace and total key count from this
         Compiling with DEBUG will result in very verbose messages. It is recommended to do this 
             only for rdb files of smaller size (a few GB).
-
-
-    CHANGES TO RDB WITH VER 4
-        - 64bitlen support
-        - few more aux stuff
-        - sorted sets use raw double format (64bit)
-        - redis modules... (wtf are these)
  */
 
 #define _GNU_SOURCE     /* for asprintf() */
@@ -524,37 +517,18 @@ static struct KI* sset_enc(FILE *fd){
         Sorted Set:
         str_enc() to get name
         get_length() to get num of bytes to represent "score"
-
-        now uses raw double format potentially instead of float
     */
     char *str = NULL;
     struct KI *key = NULL, *ktmp = NULL;
     unsigned char buffer[BUFFERSIZE], *bytelen = NULL;
-    unsigned long long i, num = 0, score = 0, b64 = 0;
-#if 0
-    fseek(fd, -1, SEEK_CUR);
+    unsigned long long i, num = 0, score = 0;
     fread(buffer,1,1,fd);
-    if(buffer[0] == 0x5){
-        b64 = 1;
-        debug_print("DEBUG: 64 bit flag!\n");
-    }
-#endif
-    fread(buffer,1,1,fd);
-    debug_print("DEBUG: NEXT BYTE BEFORE NUM: %x\n", buffer[0]);
     num = get_length(buffer,fd);
     key = create_KI();
     debug_print("DEBUG: sset_enc() num : %llu\n",num);
     for(i=0;i<num;i++){
         ktmp = str_enc(fd);
         fread(buffer,1,1,fd);
-        debug_print("sset_enc score byte: %x\n",buffer[0]);
-#if 0
-        if(b64)
-            score = 8;
-        else
-            score = 4;
-#endif
-        #if 1
         score = get_length(buffer,fd);
         debug_print("sset_enc score : %llu\n",score);
         if(score == 253){
@@ -574,7 +548,6 @@ static struct KI* sset_enc(FILE *fd){
             memset(bytelen,'\0',score);
             fread(bytelen,1,score,fd);
         }
-        #endif
         if(args.full){
             if(key->str == NULL)
                 asprintf(&key->str,"%s > %llu",ktmp->str,score);
@@ -596,12 +569,11 @@ static struct KI* sset_enc(FILE *fd){
 }
 
 static struct KI* sset64_enc(FILE *fd){
-     char *str = NULL;
+    char *str = NULL;
     struct KI *key = NULL, *ktmp = NULL;
     unsigned char buffer[BUFFERSIZE];
-    unsigned long long i, num = 0, score = 0, b64 = 0;
+    unsigned long long i, num = 0, score = 0;
     fread(buffer,1,1,fd);
-    debug_print("DEBUG: NEXT BYTE BEFORE NUM: %x\n", buffer[0]);
     num = get_length(buffer,fd);
     key = create_KI();
     debug_print("DEBUG: sset_enc() num : %llu\n",num);
@@ -609,19 +581,6 @@ static struct KI* sset64_enc(FILE *fd){
         ktmp = str_enc(fd);
         fread(&score,1,8,fd);
         debug_print("sset_enc score : %llu\n",score);
-        if(score == 253){
-        /*
-         * NaN
-         */
-        }else if(score == 254){
-        /* 
-         * INF
-         */
-        }else if(score == 255){
-        /* 
-         * -INF 
-         */
-        }
         if(args.full){
             if(key->str == NULL)
                 asprintf(&key->str,"%s > %llu",ktmp->str,score);
@@ -638,7 +597,6 @@ static struct KI* sset64_enc(FILE *fd){
         score = 0;
     }
     key->size += SSET_OH;
-   
     return key;
 }
 
@@ -1084,7 +1042,7 @@ int check_rdb_version(FILE *fd){
         fprintf(stdout,"Check RDB version  ... 0x");
         for(i = 0; i < 4; i++) fprintf(stdout,"%.2x",buffer[i]);
     }
-    if(memcmp(buffer,RDB3,4) != 0 || memcmp(buffer,RDB4,4) != 0){
+    if(memcmp(buffer,RDB3,4) != 0 && memcmp(buffer,RDB4,4) != 0){
         fprintf(stdout,"%19s\n","[FAIL]");
         fprintf(stderr,"ERROR : Incorrect RDB Version\n");
         rc = 3;
@@ -1163,7 +1121,6 @@ int main(int argc, char **argv){
             rc = 2;
             goto end;
         }
-        debug_print("TOP LEVEL BYTE  %x\n",buffer[0]);
         /* Progress bar because on big files it is difficult to tell if anything works */
         if(args.noisy && DEBUG == 0){
             pos = ftell(fd);
@@ -1269,7 +1226,6 @@ int main(int argc, char **argv){
             if(ferror(fd))
                 fprintf(stderr,"ERROR : Failed to get byte for type\n");
         }
-        debug_print("DEBUG: type : %x\n",type);
         if(type > 14 || type < 0) continue;
         /* Next byte sequence is the key name which is str_enc */
         memset(buffer,0x00,BUFFERSIZE);
