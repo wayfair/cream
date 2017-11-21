@@ -19,6 +19,13 @@
             between redis-cli info keyspace and total key count from this
         Compiling with DEBUG will result in very verbose messages. It is recommended to do this 
             only for rdb files of smaller size (a few GB).
+
+
+    CHANGES TO RDB WITH VER 4
+        - 64bitlen support
+        - few more aux stuff
+        - sorted sets use raw double format (64bit)
+        - redis modules... (wtf are these)
  */
 
 #define _GNU_SOURCE     /* for asprintf() */
@@ -28,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
 
 #define BUFFERSIZE          10
 #define PTRSZ               sizeof(void*)
@@ -91,7 +99,7 @@ struct {
         Allocate space for a new KI with initialized values
 */
 struct KI {
-    unsigned long size;
+    unsigned long long size;
     char *str;
 };
 
@@ -242,7 +250,7 @@ static int load_compressed(unsigned char *c, unsigned int clen, FILE *fd){
     return fread(c,1,clen,fd);
 }
 
-static unsigned long get_length(unsigned char *buffer, FILE *fd){
+static unsigned long long get_length(unsigned char *buffer, FILE *fd){
     unsigned int val = 0;
     unsigned long len = 0;
     /*  Everything uses Redis length encoding:
@@ -251,31 +259,62 @@ static unsigned long get_length(unsigned char *buffer, FILE *fd){
             10 : remaining 6 bits discarded, read 4 more bytes and they represent length
             11 : next object encoded in special format. Remaining 6 bits indicate format.
     */
-    switch(buffer[0] & 0xC0){
-        case 0x00:
-            len |= (buffer[0] & MASK);
-            return len;
-        case 0x40:
-            fread(buffer+1,1,1,fd);
-            /* 
-                buffer[0] = 00111111 
-                buffer[1] = 11111111
-                combine into 2 byte thing...
-            */
-            len = ((buffer[0] & MASK) << 8u) | buffer[1];
-            return len;
-        case 0x80:
-            fread(&val,1,4,fd);
-            len |= (val & 0x000000ff) << 24u;
-            len |= (val & 0x0000ff00) << 8u;
-            len |= (val & 0x00ff0000) >> 8u;
-            len |= (val & 0xff000000) >> 24u;
-            return len;
-        case 0xC0:
-            /* special format to be handled separately */
-            return 0; 
+    if (buffer[0] == 0x80) {
+        debug_print("get_length() case 80\n");
+        fread(&val,1,4,fd);
+        len |= (val & 0x000000ff) << 24u;
+        len |= (val & 0x0000ff00) << 8u;
+        len |= (val & 0x00ff0000) >> 8u;
+        len |= (val & 0xff000000) >> 24u;
+        return len;
+    } else if (buffer[0] == 0x81) {
+        debug_print("get_length() case 81\n");
+        unsigned long long dlen = 0;
+        unsigned long long dval = 0;
+        fread(&dval,1,8,fd);
+        dlen |= (dval & 0x00000000000000ff) << 56u;
+        dlen |= (dval & 0x000000000000ff00) << 40u;
+        dlen |= (dval & 0x0000000000ff0000) << 24u;
+        dlen |= (dval & 0x00000000ff000000) << 8u;
+        dlen |= (dval & 0x000000ff00000000) >> 8u;
+        dlen |= (dval & 0x0000ff0000000000) >> 24u;
+        dlen |= (dval & 0x00ff000000000000) >> 40u;
+        dlen |= (dval & 0xff00000000000000) >> 56u;
+        return dlen;
+
+    } else {
+        switch(buffer[0] & 0xC0){
+            case 0x00:
+                debug_print("get_length() case 00\n");
+                len |= (buffer[0] & MASK);
+                return len;
+            case 0x40:
+                debug_print("get_length() case 40\n");
+                fread(buffer+1,1,1,fd);
+                /* 
+                   buffer[0] = 00111111 
+                   buffer[1] = 11111111
+                   combine into 2 byte thing...
+                 */
+                debug_print("bytes : %x %x\n", buffer[0], buffer[1]);
+                len = ((buffer[0] & MASK) << 8u) | buffer[1];
+                return len;
+            case 0x80:
+                debug_print("get_length() case 80\n");
+                fread(&val,1,4,fd);
+                len |= (val & 0x000000ff) << 24u;
+                len |= (val & 0x0000ff00) << 8u;
+                len |= (val & 0x00ff0000) >> 8u;
+                len |= (val & 0xff000000) >> 24u;
+                return len;
+            case 0xC0:
+                debug_print("get_length() case C0\n");
+                /* special format to be handled separately */
+                return 0; 
+        }
+        debug_print("get_length() case bad\n");
+        return 0;
     }
-    return 0;
 }
 
 /*  Begin Encoding Functions  */
@@ -285,7 +324,8 @@ static struct KI* str_enc(FILE *fd){
     int16_t y = 0;
     int32_t z = 0;
     struct KI *key = NULL;
-    unsigned long size, unlen;
+    unsigned long long size;
+    unsigned long long unlen;
     unsigned char buffer[BUFFERSIZE], *c;
     key = create_KI();
     if(key == NULL)
@@ -298,7 +338,7 @@ static struct KI* str_enc(FILE *fd){
         return NULL;
     }
     key->size = get_length(buffer,fd);
-    debug_print("DEBUG: str_enc\tsize : %lu\n",key->size);
+    debug_print("DEBUG: str_enc\tsize : %llu\n",key->size);
     if(key->size == 0){
         /*  
             Special Format Area!
@@ -367,11 +407,11 @@ static struct KI* str_enc(FILE *fd){
                 memset(buffer,0x00,BUFFERSIZE);
                 fread(buffer,1,1,fd);
                 size = get_length(buffer,fd);
-                debug_print("DEBUG: str_enc getlength() size %lu\n",size);
+                debug_print("DEBUG: str_enc getlength() size %llu\n",size);
                 c = malloc(sizeof(char)*size+SPACE_FOR_NULL);
                 fread(buffer,1,1,fd);
                 unlen = get_length(buffer,fd);
-                debug_print("DEBUG: str_enc getlength() unlen %lu\n",unlen);
+                debug_print("DEBUG: str_enc getlength() unlen %llu\n",unlen);
                 key->str = malloc(sizeof(char)*unlen+SPACE_FOR_NULL);
                 key->size = unlen;
                 memset(key->str,'\0',unlen+1);
@@ -414,7 +454,7 @@ static struct KI* str_enc(FILE *fd){
                 so that the key in its entirety is skipped. Otherwise it will tumble out of
                 control grabbing incorrect data
             */
-            debug_print("ERROR : Could not allocate space of size %lu\n",key->size);
+            debug_print("ERROR : Could not allocate space of size %llu\n",key->size);
             free(key);
             fseek(fd,key->size,SEEK_CUR);
             return NULL;
@@ -423,7 +463,7 @@ static struct KI* str_enc(FILE *fd){
         if(key->size > 0)
             fread(key->str,key->size,1,fd);
         if(ferror(fd)){
-            fprintf(stderr,"ERROR : Failed to read %lu bytes\n",key->size);
+            fprintf(stderr,"ERROR : Failed to read %llu bytes\n",key->size);
             free(key->str);
             free(key);
             return NULL;
@@ -444,7 +484,7 @@ static struct KI* list_enc(FILE *fd){
     */
     char *str = NULL;
     struct KI *tmp, *key;
-    unsigned long i, lsize = 0;
+    unsigned long long i, lsize = 0;
     unsigned char buffer[BUFFERSIZE];
     memset(buffer,0x00,BUFFERSIZE);
     fread(buffer,1,1,fd);
@@ -484,35 +524,62 @@ static struct KI* sset_enc(FILE *fd){
         Sorted Set:
         str_enc() to get name
         get_length() to get num of bytes to represent "score"
+
+        now uses raw double format potentially instead of float
     */
     char *str = NULL;
     struct KI *key = NULL, *ktmp = NULL;
     unsigned char buffer[BUFFERSIZE], *bytelen = NULL;
-    unsigned long i, num = 0, score = 0;
+    unsigned long long i, num = 0, score = 0, b64 = 0;
+#if 0
+    fseek(fd, -1, SEEK_CUR);
     fread(buffer,1,1,fd);
+    if(buffer[0] == 0x5){
+        b64 = 1;
+        debug_print("DEBUG: 64 bit flag!\n");
+    }
+#endif
+    fread(buffer,1,1,fd);
+    debug_print("DEBUG: NEXT BYTE BEFORE NUM: %x\n", buffer[0]);
     num = get_length(buffer,fd);
     key = create_KI();
-    debug_print("DEBUG: sset_enc()\n");
+    debug_print("DEBUG: sset_enc() num : %llu\n",num);
     for(i=0;i<num;i++){
         ktmp = str_enc(fd);
         fread(buffer,1,1,fd);
+        debug_print("sset_enc score byte: %x\n",buffer[0]);
+#if 0
+        if(b64)
+            score = 8;
+        else
+            score = 4;
+#endif
+        #if 1
         score = get_length(buffer,fd);
+        debug_print("sset_enc score : %llu\n",score);
         if(score == 253){
-        /* TODO */
+        /*
+         * NaN
+         */
         }else if(score == 254){
-        /* TODO */
+        /* 
+         * INF
+         */
         }else if(score == 255){
-        /* TODO */
+        /* 
+         * -INF 
+         */
         }else{
             bytelen = malloc(sizeof(char)*score+SPACE_FOR_NULL);
             memset(bytelen,'\0',score);
             fread(bytelen,1,score,fd);
         }
+        #endif
         if(args.full){
             if(key->str == NULL)
-                asprintf(&key->str,"%s > %s",ktmp->str,bytelen);
+                asprintf(&key->str,"%s > %llu",ktmp->str,score);
             else{
-                asprintf(&str,"%s, %s > %s",key->str,ktmp->str,bytelen);
+                asprintf(&str,"%s, %s > %llu",key->str,ktmp->str,score);
                 free(key->str);
                 key->str = str;
                 str = NULL;
@@ -528,6 +595,53 @@ static struct KI* sset_enc(FILE *fd){
     return key;
 }
 
+static struct KI* sset64_enc(FILE *fd){
+     char *str = NULL;
+    struct KI *key = NULL, *ktmp = NULL;
+    unsigned char buffer[BUFFERSIZE];
+    unsigned long long i, num = 0, score = 0, b64 = 0;
+    fread(buffer,1,1,fd);
+    debug_print("DEBUG: NEXT BYTE BEFORE NUM: %x\n", buffer[0]);
+    num = get_length(buffer,fd);
+    key = create_KI();
+    debug_print("DEBUG: sset_enc() num : %llu\n",num);
+    for(i=0;i<num;i++){
+        ktmp = str_enc(fd);
+        fread(&score,1,8,fd);
+        debug_print("sset_enc score : %llu\n",score);
+        if(score == 253){
+        /*
+         * NaN
+         */
+        }else if(score == 254){
+        /* 
+         * INF
+         */
+        }else if(score == 255){
+        /* 
+         * -INF 
+         */
+        }
+        if(args.full){
+            if(key->str == NULL)
+                asprintf(&key->str,"%s > %llu",ktmp->str,score);
+            else{
+                asprintf(&str,"%s, %s > %llu",key->str,ktmp->str,score);
+                free(key->str);
+                key->str = str;
+                str = NULL;
+            }
+        }
+        key->size += ktmp->size + DICT_OH + score;
+        free(ktmp->str);
+        free(ktmp);
+        score = 0;
+    }
+    key->size += SSET_OH;
+   
+    return key;
+}
+
 static struct KI* hash_enc(FILE *fd){
     /* 
         size of hash is read using length encoding
@@ -538,7 +652,7 @@ static struct KI* hash_enc(FILE *fd){
     char *str = NULL;
     int rc = 0;
     unsigned char buffer[BUFFERSIZE];
-    unsigned long i, hsize = 0;
+    unsigned long long i, hsize = 0;
     key = create_KI();
     memset(buffer,0x00,BUFFERSIZE);
     fread(buffer,1,1,fd);
@@ -582,6 +696,10 @@ static struct KI* hash_enc(FILE *fd){
     return key;
 }
 
+static struct KI *mod_enc(FILE *fd){
+    return NULL;
+}
+
 static struct KI* zm_enc(FILE *fd){
     /* allegedly deprecated... */
     return 0;
@@ -607,7 +725,7 @@ static struct KI* zl_enc(FILE *fd){
     ktmp = str_enc(fd);
     key = create_KI();
     key->size = ktmp->size;
-    debug_print("DEBUG: zl_enc() size of key = %lu\n",key->size);
+    debug_print("DEBUG: zl_enc() size of key = %llu\n",key->size);
     if(args.full){
         key->str = malloc(key->size);
         memset(key->str,' ',key->size);
@@ -737,10 +855,10 @@ static struct KI* hmzl_enc(FILE *fd){
     memset(key->str,' ',(key->size+(6*num/2)));
     key->str[key->size+(6*num)] = '\0';
     if(key->str == NULL){
-        debug_print("DEBUG: ERROR: hmzl_enc() Could not create space for key->str, size = %lu\n",key->size);
+        debug_print("DEBUG: ERROR: hmzl_enc() Could not create space for key->str, size = %llu\n",key->size);
         return NULL;
     }
-    debug_print("DEBUG: hmzl_enc() key->str allocated size : %ld\n",key->size);
+    debug_print("DEBUG: hmzl_enc() key->str allocated size : %llu\n",key->size);
     if(args.full){
         for(i=0;i<(num/2);i++){
             /* need to do null check before strlen! zl_entry can return NULL */
@@ -800,7 +918,7 @@ static struct KI* sszl_enc(FILE *fd){
     /* 8 is for the size of an integer since scores are numbers those converted to ascii is going to need space */
     memset(key->str,' ',(key->size+(num*3*8)));
     key->str[key->size+(num*3)] = '\0';
-    debug_print("DEBUG: sszl_enc() size of key = %ld\n",key->size);
+    debug_print("DEBUG: sszl_enc() size of key = %llu\n",key->size);
     if(args.full){
         for(i=0;i<(num);i++){
             tmp = get_zl_entry(ktmp->str+offset,&offset);
@@ -836,7 +954,7 @@ static struct KI* ql_enc(FILE *fd){
     int i;
     struct KI *key = NULL, *ktmp;
     unsigned char buffer[BUFFERSIZE];
-    unsigned long num = 0;
+    unsigned long long num = 0;
     debug_print("DEBUG: ql_enc()\n");
     fread(buffer,1,1,fd);
     num = get_length(buffer,fd);
@@ -884,7 +1002,7 @@ void print_key_info(struct KI *name, struct KI *value, uint8_t type, unsigned lo
             case 14: fprintf(fo,"Type : Quicklist\n"); break;
             default: fprintf(fo,"Type : N/A\n"); 
         }
-        fprintf(fo,"Size : %lu\n",(name->size+value->size)+ROBJ_OH); 
+        fprintf(fo,"Size : %llu\n",(name->size+value->size)+ROBJ_OH); 
         fprintf(fo,"Exp  : %lu\n",exp);
         if(args.full){
             fprintf(fo,"Value: %s\n",value->str);
@@ -953,7 +1071,8 @@ int check_magic(FILE *fd){
 }
 
 int check_rdb_version(FILE *fd){
-    unsigned char rdbver[4] = {0x30,0x30,0x30,0x37};
+    unsigned char RDB3[4] = {0x30,0x30,0x30,0x37};
+    unsigned char RDB4[4] = {0x30,0x30,0x30,0x38};
     char buffer[BUFFERSIZE];
     int i, rc = 0;
     fread(buffer,1,4,fd);
@@ -965,7 +1084,7 @@ int check_rdb_version(FILE *fd){
         fprintf(stdout,"Check RDB version  ... 0x");
         for(i = 0; i < 4; i++) fprintf(stdout,"%.2x",buffer[i]);
     }
-    if(memcmp(buffer,rdbver,4) != 0){
+    if(memcmp(buffer,RDB3,4) != 0 || memcmp(buffer,RDB4,4) != 0){
         fprintf(stdout,"%19s\n","[FAIL]");
         fprintf(stderr,"ERROR : Incorrect RDB Version\n");
         rc = 3;
@@ -985,8 +1104,9 @@ int main(int argc, char **argv){
     long pos, sz = 0, cur = 0, per  = 0;
     uint8_t type;
     uint64_t rdbtime = 0, exp = 0;
-    struct KI* (*fptr[11])(FILE*) = {&str_enc, &list_enc, &set_enc, &sset_enc, &hash_enc, 
-                                &zm_enc, &zl_enc, &is_enc, &sszl_enc, &hmzl_enc, &ql_enc};
+    struct KI* (*fptr[13])(FILE*) = {&str_enc, &list_enc, &set_enc, &sset_enc, 
+                                    &hash_enc, &sset64_enc, &mod_enc, &zm_enc, 
+                                    &zl_enc, &is_enc, &sszl_enc, &hmzl_enc, &ql_enc};
     struct KI *name = NULL, *value = NULL, *big = NULL;
     unsigned char buffer[BUFFERSIZE];
     unsigned long keycount = 0, keyper[11];
@@ -1043,6 +1163,7 @@ int main(int argc, char **argv){
             rc = 2;
             goto end;
         }
+        debug_print("TOP LEVEL BYTE  %x\n",buffer[0]);
         /* Progress bar because on big files it is difficult to tell if anything works */
         if(args.noisy && DEBUG == 0){
             pos = ftell(fd);
@@ -1098,7 +1219,7 @@ int main(int argc, char **argv){
                 /* Following byte is the DB */
                 fread(buffer,1,1,fd);
                 if(args.full)
-                    fprintf(fo,"Database selected: %lu\n",get_length(buffer,fd));
+                    fprintf(fo,"Database selected: %llu\n",get_length(buffer,fd));
                 continue;
             case 0xFF:
                 /* End of File */
@@ -1110,7 +1231,7 @@ int main(int argc, char **argv){
                     ttp = ttp%60;
                 }
                 fprintf(fo,"Total number of keys: %lu\n",keycount);
-                fprintf(fo,"Largest key: %s with size %lu bytes\n",big->str,big->size);
+                fprintf(fo,"Largest key: %s with size %llu bytes\n",big->str,big->size);
                 if(args.noisy){
                     fprintf(stdout,"\r[");
                     for(i=0;i<50;i++) fprintf(stdout,"#");
@@ -1132,7 +1253,7 @@ int main(int argc, char **argv){
                     fprintf(stdout,"+   HMZL   +  %12lu  + %11.2f%%        +\n",keyper[9],(((float)keyper[9]*100)/(float)keycount));
                     fprintf(stdout,"+Quicklist +  %12lu  + %11.2f%%        +\n",keyper[10],(((float)keyper[10]*100)/(float)keycount));
                     fprintf(stdout,"+++++++++++++++++++++++++++++++++++++++++++++++++++\n");
-                    fprintf(stdout,"Largest key: %s with size %lu bytes\n",big->str,big->size);
+                    fprintf(stdout,"Largest key: %s with size %llu bytes\n",big->str,big->size);
                     fprintf(stdout,"Dumpread complete.\n");
                 }
                 goto end;
@@ -1148,6 +1269,7 @@ int main(int argc, char **argv){
             if(ferror(fd))
                 fprintf(stderr,"ERROR : Failed to get byte for type\n");
         }
+        debug_print("DEBUG: type : %x\n",type);
         if(type > 14 || type < 0) continue;
         /* Next byte sequence is the key name which is str_enc */
         memset(buffer,0x00,BUFFERSIZE);
@@ -1157,7 +1279,7 @@ int main(int argc, char **argv){
             keyper[type]++;
         } 
         else{
-            value = (*fptr[type-4])(fd);
+            value = (*fptr[type-2])(fd);
             keyper[type-4]++;
         }
         /* The value of the "ctime" key is used for base to get expiration */
