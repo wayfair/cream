@@ -558,7 +558,7 @@ static struct KI* sset_enc(FILE *fd){
                 str = NULL;
             }
         }
-        key->size += ktmp->size + DICT_OH + score;
+        key->size += ktmp->size + DICT_OH + (sizeof(float));
         free(bytelen);
         free(ktmp->str);
         free(ktmp);
@@ -591,7 +591,7 @@ static struct KI* sset64_enc(FILE *fd){
                 str = NULL;
             }
         }
-        key->size += ktmp->size + DICT_OH + score;
+        key->size += ktmp->size + DICT_OH + 8;
         free(ktmp->str);
         free(ktmp);
         score = 0;
