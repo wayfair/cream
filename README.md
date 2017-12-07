@@ -31,7 +31,7 @@ make debug
 ## Dumpread
 
 Parses a Redis RDB file from a BGSAVE and outputs in a human-readable format.
-It is heavily inspiried by https://github.com/sripathikrishnan/redis-rdb-tools,
+It is heavily inspired by https://github.com/sripathikrishnan/redis-rdb-tools,
 but that Python implementation was too slow for our production needs. At
 Wayfair, we have large Redis clusters with many millions, sometimes billions, of
 keys per node. Writing this in C provided a significant performance improvement,
