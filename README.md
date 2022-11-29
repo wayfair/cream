@@ -1,3 +1,5 @@
+_NOTE: Wayfair has shifted to using [Redis Insight](https://redis.com/redis-enterprise/redis-insight/), and no longer maintains or uses this tool_.
+
 # cream
 
 **Cache Rules Everything Around Me**
